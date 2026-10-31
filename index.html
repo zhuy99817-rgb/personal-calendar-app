@@ -128,6 +128,14 @@
   .jr-card:hover .jc-ds .go{opacity:1;}
   .jr-card .jc-text{font-size:13px;color:var(--text2);white-space:pre-wrap;word-break:break-all;max-height:60px;overflow:hidden;}
 
+  /* 随记卡 */
+  .note-card{background:#FAFBFE;border:1px solid var(--line);border-radius:10px;padding:10px 13px;margin-bottom:8px;position:relative;}
+  .note-card .nc-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;}
+  .note-card .nc-time{font-size:11px;color:var(--text3);font-weight:600;}
+  .note-card .nc-del{width:20px;height:20px;border:none;background:transparent;color:var(--text3);border-radius:5px;cursor:pointer;font-size:12px;opacity:0;}
+  .note-card:hover .nc-del{opacity:1;} .note-card .nc-del:hover{color:var(--red);background:#fee2e2;}
+  .note-card .nc-text{font-size:13.5px;color:var(--text);white-space:pre-wrap;word-break:break-all;line-height:1.7;}
+
   /* 习惯（流区整体展示） */
   .habit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px;}
   .habit{position:relative;background:#FAFBFE;border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px;}
@@ -246,6 +254,7 @@
         <button class="tab active" data-tab="schedule" onclick="switchTab('schedule')">日程</button>
         <button class="tab" data-tab="todo" onclick="switchTab('todo')">待办</button>
         <button class="tab" data-tab="journal" onclick="switchTab('journal')">日记</button>
+        <button class="tab" data-tab="note" onclick="switchTab('note')">随记</button>
         <button class="tab" data-tab="habit" onclick="switchTab('habit')">习惯</button>
       </div>
       <div class="panel-input" id="panelInput"></div>
@@ -341,7 +350,7 @@ let state = {
   selected: '',
   tab: 'schedule',
   editingEv: null,              // {ds, id} 正在编辑的日程（=添加模式）
-  data: { records: {}, config: { habits: [] } },
+  data: { records: {}, config: { habits: [] }, notes: [] },
   sync: 'none',
   syncMsg: '',
 };
@@ -378,12 +387,12 @@ function utf8ToB64(str){
 
 /* ---------- 本地持久化 ---------- */
 function persistLocal(){
-  try{ localStorage.setItem(LS_KEY_DATA, JSON.stringify({records:state.data.records, config:state.data.config})); }catch(e){}
+  try{ localStorage.setItem(LS_KEY_DATA, JSON.stringify({records:state.data.records, config:state.data.config, notes:state.data.notes||[]})); }catch(e){}
 }
 function loadLocal(){
   try{
     const raw = localStorage.getItem(LS_KEY_DATA);
-    if(raw){ const d = JSON.parse(raw); if(d && d.records){ state.data.records = d.records; if(d.config) state.data.config = d.config; } }
+    if(raw){ const d = JSON.parse(raw); if(d && d.records){ state.data.records = d.records; if(d.config) state.data.config = d.config; state.data.notes = d.notes || []; } }
   }catch(e){}
 }
 
@@ -444,7 +453,20 @@ function renderSync(){
   }
 }
 
-async function saveToGithub(){
+/* ---- 串行保存：杜绝并发提交导致的版本冲突 ---- */
+async function ghPutFileWithRetry(contentB64, attempt){
+  try{
+    await ghPutFile(contentB64, 'auto save: update calendar records');
+  }catch(e){
+    // GitHub 并发写冲突（409 does not match）：重新拉取最新sha再试
+    if(attempt < 2 && (e.status===409 || (e.message||'').includes('does not match'))){
+      return ghPutFileWithRetry(contentB64, attempt+1);
+    }
+    throw e;
+  }
+}
+let saveChain = Promise.resolve();
+async function doSaveToGithub(){
   const cred = getCred();
   if(!cred.token){ setSync('none'); return; }
   setSync('syncing');
@@ -454,12 +476,19 @@ async function saveToGithub(){
       updatedAt: new Date().toISOString(),
       records: state.data.records,
       config: state.data.config,
+      notes: state.data.notes || [],
     };
-    await ghPutFile(utf8ToB64(JSON.stringify(payload)), 'auto save: update calendar records');
+    await ghPutFileWithRetry(utf8ToB64(JSON.stringify(payload)), 0);
     setSync('ok');
   }catch(e){
     setSync('error', e.message || '未知错误');
+    throw e;
   }
+}
+function saveToGithub(){
+  const p = saveChain.then(()=>doSaveToGithub());
+  saveChain = p.catch(()=>{});
+  return p;
 }
 let saveTimer = null;
 function scheduleSave(){
@@ -478,6 +507,7 @@ async function loadFromGithub(){
     if(data && data.records){
       state.data.records = data.records;
       if(data.config) state.data.config = data.config;
+      state.data.notes = Array.isArray(data.notes) ? data.notes : (state.data.notes || []);
       persistLocal();
       renderAll();
       setSync('ok');
@@ -522,7 +552,7 @@ function touch(){
 
 /* ---------- 数据导出/导入 ---------- */
 function exportBackup(){
-  const payload = { exportedAt: new Date().toISOString(), records: state.data.records, config: state.data.config };
+  const payload = { exportedAt: new Date().toISOString(), records: state.data.records, config: state.data.config, notes: state.data.notes || [] };
   const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -539,6 +569,7 @@ function importBackup(file){
       if(!confirm('导入将覆盖当前所有记录，确定继续吗？')) return;
       state.data.records = d.records;
       if(d.config) state.data.config = d.config;
+      state.data.notes = d.notes || [];
       persistLocal(); renderAll();
       setToast('已导入 ' + Object.keys(d.records).length + ' 天记录', 'ok');
     }catch(e){ setToast('导入失败：' + e.message, 'err'); }
@@ -566,7 +597,7 @@ function renderCalendar(){
     const rec = state.data.records[ds] || {};
     const hasSched = (rec.schedule||[]).length>0;
     const hasTodo  = (rec.todos||[]).some(t=>!t.done);
-    const hasNote  = !!(rec.journal && rec.journal.trim()) || (rec.habits && Object.keys(rec.habits).some(k=>rec.habits[k]===true));
+    const hasNote  = !!(rec.journal && rec.journal.trim()) || (rec.habits && Object.keys(rec.habits).some(k=>rec.habits[k]===true)) || hasNoteOn(ds);
     let dots = '';
     if(hasSched) dots += '<i class="d-sched"></i>';
     if(hasTodo)  dots += '<i class="d-todo"></i>';
@@ -595,6 +626,9 @@ function renderPanelTop(){
   $('panelDate').innerHTML = dateLabel(ds, true).replace(weekOf(ds), '<span class="w">'+weekOf(ds)+'</span>');
 }
 function weekOf(ds){ return WEEK_CN[toDate(ds).getDay()]; }
+function hasNoteOn(ds){
+  return (state.data.notes||[]).some(n => noteDayKeyOf(n.createdAt) === ds);
+}
 function switchTab(tab){
   state.tab = tab;
   document.querySelectorAll('.tab').forEach(el=>el.classList.toggle('active', el.dataset.tab===tab));
@@ -615,6 +649,7 @@ function renderInputArea(){
     case 'schedule': box.innerHTML = inputSchedule(); break;
     case 'todo':     box.innerHTML = inputTodo(); break;
     case 'journal':  box.innerHTML = inputJournal(); break;
+    case 'note':     box.innerHTML = inputNote(); break;
     case 'habit':    box.classList.add('hidden'); box.innerHTML=''; break;
   }
 }
@@ -631,11 +666,8 @@ function inputSchedule(){
       '<button class="btn ghost sm" onclick="cancelEdit()">取消</button>' +
       '</div><div class="qa-hint"><span class="edit-tag">正在编辑 ' + escapeHtml(dateLabel(editing.ds,false)) + ' 的日程</span> · 时间清空 = 全天</div>';
   }
-  return '<div class="quick-add">' +
-    '<input type="time" id="evTime" value="" title="不填=全天">' +
-    '<input type="text" id="evTitle" placeholder="记一件事，回车添加…" maxlength="60" onkeydown="if(event.key===\'Enter\')quickAddSchedule()">' +
-    '<button class="btn sm" onclick="quickAddSchedule()">添加</button>' +
-    '</div><div class="qa-hint">时间不填 = 全天事件 · 点击已有日程可修改</div>';
+  return '<input type="text" id="evTitle" placeholder="记一件事，回车添加 · 开头写 15:30 可带时间 · 不写=全天" maxlength="80" onkeydown="if(event.key===\'Enter\')quickAddSchedule()" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:#FAFBFE;color:var(--text);outline:none;">' +
+    '<div class="qa-hint">直接回车 = 全天日程 · 想带钟点就写在开头（如「15:30 开会」）· 点击已有日程可修改</div>';
 }
 function inputTodo(){
   return '<div class="quick-add">' +
@@ -660,6 +692,7 @@ function renderFlow(){
     case 'schedule': el.innerHTML = flowSchedule(); break;
     case 'todo':     el.innerHTML = flowTodo(); break;
     case 'journal':  el.innerHTML = flowJournal(); break;
+    case 'note':     el.innerHTML = flowNote(); break;
     case 'habit':    el.innerHTML = flowHabit(); break;
   }
 }
@@ -755,14 +788,86 @@ function jrJump(ds){
   switchTab('journal');
 }
 
+/* ---------- 随记（想法速记，不绑定日期，按创建时间记录） ---------- */
+function inputNote(){
+  return '<textarea id="ntInput" rows="2" placeholder="记下一个想法、观点、灵感…（回车保存，Shift+回车可换行）" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();quickAddNote();}" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:#FAFBFE;color:var(--text);outline:none;resize:vertical;line-height:1.7;"></textarea>' +
+    '<div class="qa-hint">随记不占日历格子 · 自动记录时间和日期 · 会进入左侧日历圆点标记</div>';
+}
+function quickAddNote(){
+  const ta = $('ntInput');
+  const text = ta.value.trim();
+  if(!text) return;
+  if(!state.data.notes) state.data.notes = [];
+  state.data.notes.push({ id: uid(), text: text, createdAt: new Date().toISOString() });
+  ta.value = '';
+  touch();
+  renderCalendar(); renderFlow();
+  ta.focus();
+}
+function delNote(id){
+  if(!confirm('删除这条随记？')) return;
+  state.data.notes = (state.data.notes||[]).filter(n=>n.id!==id);
+  touch();
+  renderCalendar(); renderFlow();
+}
+function noteTimeOf(iso){
+  const d = new Date(iso);
+  return pad0(d.getHours()) + ':' + pad0(d.getMinutes());
+}
+function noteDayKeyOf(iso){
+  const d = new Date(iso);
+  return fmtDate(d.getFullYear(), d.getMonth(), d.getDate());
+}
+function noteDayLabel(key){
+  const t = todayStr();
+  if(key === t) return '今天';
+  const yd = new Date();
+  yd.setDate(yd.getDate()-1);
+  if(key === fmtDate(yd.getFullYear(), yd.getMonth(), yd.getDate())) return '昨天';
+  const d = toDate(key);
+  const ny = new Date().getFullYear();
+  return (d.getFullYear()===ny ? '' : d.getFullYear()+'年') + (d.getMonth()+1) + '月' + d.getDate() + '日';
+}
+function flowNote(){
+  const notes = (state.data.notes||[]).slice().sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||''));
+  if(notes.length === 0){
+    return '<div class="flow-all-empty">还没有随记<br>上面输入框就是你的灵感捕捉器</div>';
+  }
+  let html = '';
+  let lastKey = null;
+  notes.forEach(n=>{
+    const key = noteDayKeyOf(n.createdAt);
+    if(key !== lastKey){
+      html += '<div class="fd">' + escapeHtml(noteDayLabel(key)) + '</div>';
+      lastKey = key;
+    }
+    html += '<div class="note-card">' +
+      '<div class="nc-top"><span class="nc-time">'+escapeHtml(noteTimeOf(n.createdAt))+'</span>' +
+      '<button class="nc-del" onclick="delNote(\''+n.id+'\')" title="删除">&#10005;</button></div>' +
+      '<div class="nc-text">'+escapeHtml(n.text)+'</div>' +
+      '</div>';
+  });
+  return html;
+}
+
 /* ---------- 日程操作 ---------- */
+function parseQuickInput(text){
+  const m = String(text).match(/^(\d{1,2})[:：](\d{1,2})\s+(.+)$/);
+  if(m){
+    const h = parseInt(m[1],10), mm = parseInt(m[2],10);
+    if(h>=0 && h<=23 && mm>=0 && mm<=59){
+      return { time: pad0(h)+':'+pad0(mm), title: m[3].trim() };
+    }
+  }
+  return { time:'', title: String(text).trim() };
+}
 function quickAddSchedule(){
   const ds = state.selected;
-  const time = $('evTime').value;
-  const title = $('evTitle').value.trim();
-  if(!title){ $('evTitle').focus(); return; }
+  const raw = $('evTitle').value;
+  const parsed = parseQuickInput(raw);
+  if(!parsed.title){ $('evTitle').focus(); return; }
   const rec = dayRec(ds);
-  rec.schedule.push({ id:uid(), time: time||'', title, note:'' });
+  rec.schedule.push({ id:uid(), time: parsed.time, title: parsed.title, note:'' });
   touch();
   renderCalendar(); renderInputArea(); renderFlow();
   const t = $('evTitle'); if(t) t.focus();
