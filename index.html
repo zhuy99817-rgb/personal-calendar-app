@@ -181,6 +181,16 @@
   .data-ops{display:flex;flex-direction:column;gap:6px;}
   .data-ops .row{display:flex;gap:8px;}
 
+  /* 外观配色板 */
+  .palette{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .pbtn{width:30px;height:30px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px var(--line);cursor:pointer;transition:.15s;padding:0;}
+  .pbtn:hover{transform:scale(1.12);}
+  .pbtn.on{box-shadow:0 0 0 2px var(--primary);}
+  .psep{flex:1;}
+  #themeCustomColor,#bgColorPick{width:44px;height:30px;border:none;background:none;cursor:pointer;padding:0;}
+  #themeCustomColor::-webkit-color-swatch-wrapper,#bgColorPick::-webkit-color-swatch-wrapper{padding:0;}
+  #themeCustomColor::-webkit-color-swatch,#bgColorPick::-webkit-color-swatch{border:1px solid var(--line);border-radius:6px;}
+
   .footer{text-align:center;color:var(--text3);font-size:12px;padding:22px 0 6px;}
 
   /* ===== Responsive ===== */
@@ -262,7 +272,7 @@
     </section>
   </div>
 
-  <footer class="footer">数据存储于你的 GitHub 私有仓库 · 由 Data Agent 生成</footer>
+  <footer class="footer">数据存储于你的 GitHub 私有仓库 · 由 Data Agent 生成 · <b>V4.1</b></footer>
 </div>
 
 <!-- Settings Modal -->
@@ -287,6 +297,31 @@
       <div class="actions">
         <button class="btn ghost" id="btnTestConn">测试连接</button>
         <button class="btn" id="btnSaveConn">保存并同步</button>
+      </div>
+      <div class="divider"></div>
+      <div class="field">
+        <label>主题色</label>
+        <div class="palette" id="palette">
+          <button class="pbtn" data-p="violet" title="紫罗兰（默认）" style="background:linear-gradient(135deg,#5B5FEF,#8B5CF6);"></button>
+          <button class="pbtn" data-p="ocean" title="海洋蓝" style="background:linear-gradient(135deg,#3B82F6,#06B6D4);"></button>
+          <button class="pbtn" data-p="forest" title="翡翠绿" style="background:linear-gradient(135deg,#10B981,#34D399);"></button>
+          <button class="pbtn" data-p="sunset" title="日落橙" style="background:linear-gradient(135deg,#F59E0B,#F97316);"></button>
+          <button class="pbtn" data-p="rose" title="玫瑰粉" style="background:linear-gradient(135deg,#EC4899,#F472B6);"></button>
+          <span class="psep"></span>
+          <input type="color" id="themeCustomColor" title="自定义主色" value="#5B5FEF">
+        </div>
+      </div>
+      <div class="field">
+        <label>背景颜色</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="color" id="bgColorPick" value="#F4F5FB">
+          <button class="btn ghost sm" id="btnResetTheme">恢复默认外观</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>背景图片（选填）</label>
+        <input type="text" id="bgImageInput" placeholder="粘贴图片链接，整个页面将以此为背景">
+        <div class="hint">填链接后自动铺满全页（建议浅色调图片，卡片仍保持白底保证可读）；留空则用上面的纯色背景。</div>
       </div>
       <div class="divider"></div>
       <div class="data-ops">
@@ -466,6 +501,8 @@ async function ghPutFileWithRetry(contentB64, attempt){
   }
 }
 let saveChain = Promise.resolve();
+let saveRetryTimer = null;
+let saveRetryCount = 0;
 async function doSaveToGithub(){
   const cred = getCred();
   if(!cred.token){ setSync('none'); return; }
@@ -488,6 +525,15 @@ async function doSaveToGithub(){
 function saveToGithub(){
   const p = saveChain.then(()=>doSaveToGithub());
   saveChain = p.catch(()=>{});
+  p.then(()=>{ saveRetryCount = 0; }).catch(()=>{
+    // 失败自愈：8秒后自动静默重试（连续失败最多5次，成功即清零）
+    if(saveRetryTimer || saveRetryCount >= 5) return;
+    saveRetryTimer = setTimeout(()=>{
+      saveRetryTimer = null;
+      saveRetryCount++;
+      if(state.sync === 'error') saveToGithub();
+    }, 8000);
+  });
   return p;
 }
 let saveTimer = null;
@@ -1075,6 +1121,60 @@ function goToday(){
   selectDate(todayStr());
 }
 
+/* ---------- 外观主题（存本机，不进云端） ---------- */
+const THEME_PRESETS = {
+  violet: ['#5B5FEF','#8B5CF6'],
+  ocean:  ['#3B82F6','#06B6D4'],
+  forest: ['#10B981','#34D399'],
+  sunset: ['#F59E0B','#F97316'],
+  rose:   ['#EC4899','#F472B6'],
+};
+const LS_KEY_THEME = 'pc_theme';
+function lighten(hex, amt){
+  try{
+    const n = parseInt(hex.slice(1), 16);
+    const clamp = v => Math.max(0, Math.min(255, v));
+    const r = clamp((n>>16)+amt), g = clamp(((n>>8)&255)+amt), b = clamp((n&255)+amt);
+    return '#'+((r<<16)|(g<<8)|b).toString(16).padStart(6,'0');
+  }catch(e){ return hex; }
+}
+function getTheme(){
+  try{ return JSON.parse(localStorage.getItem(LS_KEY_THEME)||'null') || {}; }catch(e){ return {}; }
+}
+function saveTheme(t){
+  const merged = Object.assign(getTheme(), t);
+  localStorage.setItem(LS_KEY_THEME, JSON.stringify(merged));
+  applyTheme();
+}
+function applyTheme(){
+  const t = getTheme();
+  const root = document.documentElement;
+  root.style.setProperty('--primary', t.primary || '#5B5FEF');
+  root.style.setProperty('--primary2', t.primary2 || '#8B5CF6');
+  root.style.setProperty('--bg', t.bg || '#F4F5FB');
+  if(t.bgImage){
+    document.body.style.backgroundImage = 'url("'+t.bgImage+'")';
+    document.body.style.backgroundSize = 'cover';
+    document.body.style.backgroundPosition = 'center';
+    document.body.style.backgroundAttachment = 'fixed';
+  } else {
+    document.body.style.backgroundImage = '';
+    document.body.style.backgroundSize = '';
+    document.body.style.backgroundPosition = '';
+    document.body.style.backgroundAttachment = '';
+  }
+  const bc = $('bgColorPick'); if(bc) bc.value = t.bg || '#F4F5FB';
+  const bi = $('bgImageInput'); if(bi) bi.value = t.bgImage || '';
+  const cc = $('themeCustomColor'); if(cc) cc.value = t.custom || '#5B5FEF';
+  document.querySelectorAll('.pbtn').forEach(b=>{
+    b.classList.toggle('on', b.dataset.p === (t.preset||'violet') && !t.custom);
+  });
+}
+function resetTheme(){
+  localStorage.removeItem(LS_KEY_THEME);
+  applyTheme();
+}
+
 /* ---------- 设置 ---------- */
 function openSettings(){
   const cred = getCred();
@@ -1082,6 +1182,7 @@ function openSettings(){
   $('setOwner').value = cred.owner;
   $('setRepo').value = cred.repo;
   $('setToast').textContent='';
+  applyTheme();
   $('maskSettings').classList.add('show');
 }
 function setToast(msg, kind){ const el=$('setToast'); el.textContent=msg; el.className='toast-msg '+(kind||''); }
@@ -1158,6 +1259,29 @@ document.addEventListener('DOMContentLoaded', ()=>{
   document.querySelectorAll('.mask').forEach(m=>{
     m.addEventListener('click', e=>{ if(e.target===m) m.classList.remove('show'); });
   });
+  // 外观自定义
+  document.querySelectorAll('.pbtn').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      const pair = THEME_PRESETS[b.dataset.p];
+      saveTheme({preset: b.dataset.p, primary: pair[0], primary2: pair[1], custom: ''});
+    });
+  });
+  $('themeCustomColor').addEventListener('input', e=>{
+    const c = e.target.value;
+    saveTheme({preset:'', custom:c, primary:c, primary2:lighten(c, 36)});
+  });
+  $('bgColorPick').addEventListener('input', e=>{ saveTheme({bg: e.target.value}); });
+  $('bgImageInput').addEventListener('change', e=>{
+    const v = e.target.value.trim();
+    if(v && !/^https?:\/\//i.test(v)){
+      alert('背景图片请填写 http(s) 开头的图片链接');
+      e.target.value = '';
+      return;
+    }
+    saveTheme({bgImage: v});
+  });
+  $('btnResetTheme').addEventListener('click', ()=>{ resetTheme(); });
+  applyTheme();
   const observer = new MutationObserver(()=>{ if(state.tab==='journal') bindJournal(); });
   observer.observe($('panelInput'), {childList:true});
   init();
