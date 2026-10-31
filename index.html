@@ -191,6 +191,17 @@
   #themeCustomColor::-webkit-color-swatch-wrapper,#bgColorPick::-webkit-color-swatch-wrapper{padding:0;}
   #themeCustomColor::-webkit-color-swatch,#bgColorPick::-webkit-color-swatch{border:1px solid var(--line);border-radius:6px;}
 
+  /* 背景取景框裁剪器 */
+  .cropper{background:#fff;border-radius:16px;width:min(720px,94vw);padding:16px 18px 18px;box-shadow:0 20px 60px rgba(15,23,42,.3);margin:0 10px;}
+  .crop-title{font-size:15px;font-weight:700;margin-bottom:10px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;}
+  .crop-title .crop-sub{font-size:12px;color:var(--text3);font-weight:400;}
+  .crop-box{position:relative;width:100%;aspect-ratio:16/9;border-radius:10px;overflow:hidden;background:#1E2337;cursor:grab;touch-action:none;}
+  .crop-box:active{cursor:grabbing;}
+  .crop-box img{position:absolute;user-select:none;pointer-events:none;max-width:none;will-change:left,top,width;}
+  .crop-controls{display:flex;align-items:center;gap:10px;margin:12px 0 4px;}
+  .crop-controls input[type="range"]{accent-color:var(--primary);}
+  .crop-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:10px;}
+
   .footer{text-align:center;color:var(--text3);font-size:12px;padding:22px 0 6px;}
 
   /* ===== Responsive ===== */
@@ -272,7 +283,7 @@
     </section>
   </div>
 
-  <footer class="footer">数据存储于你的 GitHub 私有仓库 · 由 Data Agent 生成 · <b>V4.1</b></footer>
+  <footer class="footer">数据存储于你的 GitHub 私有仓库 · 由 Data Agent 生成 · <b>V4.2</b></footer>
 </div>
 
 <!-- Settings Modal -->
@@ -319,9 +330,13 @@
         </div>
       </div>
       <div class="field">
-        <label>背景图片（选填）</label>
-        <input type="text" id="bgImageInput" placeholder="粘贴图片链接，整个页面将以此为背景">
-        <div class="hint">填链接后自动铺满全页（建议浅色调图片，卡片仍保持白底保证可读）；留空则用上面的纯色背景。</div>
+        <label>背景图片</label>
+        <div style="display:flex;gap:8px;margin-bottom:6px;">
+          <button class="btn sm" id="btnLocalBg">本地上传（可调整取景）</button>
+          <button class="btn ghost sm" id="btnClearBg">清除背景图</button>
+        </div>
+        <input type="text" id="bgImageInput" placeholder="或粘贴网络图片链接（http开头）">
+        <div class="hint">本地上传会打开取景框：拖动图片调整位置、滑块缩放，确认后自动压缩保存；也可直接粘贴网络图片链接。</div>
       </div>
       <div class="divider"></div>
       <div class="data-ops">
@@ -331,6 +346,25 @@
         </div>
         <button class="link-btn" id="btnClearLocal">清空本机缓存（不会删除云端数据）</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Background cropper Modal -->
+<div class="mask" id="maskCropper">
+  <div class="cropper">
+    <div class="crop-title">调整背景取景 <span class="crop-sub">拖动图片调整位置 · 滑块或按钮缩放</span></div>
+    <div class="crop-box" id="cropBox">
+      <img id="cropImg" draggable="false" alt="">
+    </div>
+    <div class="crop-controls">
+      <button class="btn ghost sm" onclick="cropZoom(-0.25)">&#8722;</button>
+      <input type="range" id="cropScale" min="1" max="6" step="0.01" value="1" style="flex:1;">
+      <button class="btn ghost sm" onclick="cropZoom(0.25)">&#43;</button>
+    </div>
+    <div class="crop-actions">
+      <button class="btn ghost" onclick="cancelCrop()">取消</button>
+      <button class="btn" onclick="applyCrop()">确认使用</button>
     </div>
   </div>
 </div>
@@ -1143,7 +1177,12 @@ function getTheme(){
 }
 function saveTheme(t){
   const merged = Object.assign(getTheme(), t);
-  localStorage.setItem(LS_KEY_THEME, JSON.stringify(merged));
+  try{
+    localStorage.setItem(LS_KEY_THEME, JSON.stringify(merged));
+  }catch(e){
+    alert('外观保存失败：本机存储空间不足，背景图请换小一些的图片');
+    return;
+  }
   applyTheme();
 }
 function applyTheme(){
@@ -1173,6 +1212,86 @@ function applyTheme(){
 function resetTheme(){
   localStorage.removeItem(LS_KEY_THEME);
   applyTheme();
+}
+
+/* ---------- 背景取景框（本地上传 + 裁剪压缩） ---------- */
+let cropState = { img:null, scale:1, minS:1, ox:0, oy:0 };
+function pickLocalBg(){
+  const inp=document.createElement('input');
+  inp.type='file'; inp.accept='image/*';
+  inp.onchange=()=>{
+    if(!inp.files[0]) return;
+    const r=new FileReader();
+    r.onload = e => openCropper(e.target.result);
+    r.readAsDataURL(inp.files[0]);
+  };
+  inp.click();
+}
+function openCropper(dataUrl){
+  const im = new Image();
+  im.onload = ()=>{
+    $('maskCropper').classList.add('show');
+    requestAnimationFrame(()=>{
+      const box = $('cropBox');
+      const W = box.clientWidth, H = box.clientHeight;
+      if(!W){ return; }
+      const minS = Math.max(W/im.naturalWidth, H/im.naturalHeight);
+      cropState = { img:im, scale:minS, minS:minS, ox:(W-im.naturalWidth*minS)/2, oy:(H-im.naturalHeight*minS)/2 };
+      $('cropScale').value = 1;
+      $('cropScale').min = 1; $('cropScale').max = 6; $('cropScale').step = 0.01;
+      renderCropImg();
+    });
+  };
+  im.src = dataUrl;
+}
+function renderCropImg(){
+  const el = $('cropImg');
+  el.src = cropState.img.src;
+  el.style.width  = (cropState.img.naturalWidth  * cropState.scale) + 'px';
+  el.style.height = 'auto';
+  el.style.left = cropState.ox + 'px';
+  el.style.top  = cropState.oy + 'px';
+}
+function clampCropPos(){
+  const box = $('cropBox');
+  const W = box.clientWidth, H = box.clientHeight;
+  const dw = cropState.img.naturalWidth  * cropState.scale;
+  const dh = cropState.img.naturalHeight * cropState.scale;
+  cropState.ox = Math.min(0, Math.max(W-dw, cropState.ox));
+  cropState.oy = Math.min(0, Math.max(H-dh, cropState.oy));
+}
+function setCropScale(ns){
+  ns = Math.min(cropState.minS*6, Math.max(cropState.minS, ns));
+  const box = $('cropBox');
+  const cx = box.clientWidth/2, cy = box.clientHeight/2;
+  cropState.ox = cx - (cx - cropState.ox) * (ns/cropState.scale);
+  cropState.oy = cy - (cy - cropState.oy) * (ns/cropState.scale);
+  cropState.scale = ns;
+  clampCropPos(); renderCropImg();
+  $('cropScale').value = cropState.scale / cropState.minS;
+}
+function cropZoom(f){ setCropScale(cropState.scale * f); }
+function cancelCrop(){ closeMasks(); }
+function applyCrop(){
+  const box = $('cropBox');
+  const W = box.clientWidth, H = box.clientHeight;
+  const OUT_W = 1600, OUT_H = Math.round(OUT_W * H / W);
+  const c = document.createElement('canvas');
+  c.width = OUT_W; c.height = OUT_H;
+  const ctx = c.getContext('2d');
+  const k = OUT_W / W;
+  ctx.drawImage(cropState.img,
+    cropState.ox*k, cropState.oy*k,
+    cropState.img.naturalWidth*cropState.scale*k, cropState.img.naturalHeight*cropState.scale*k);
+  let q = 0.82, url = '';
+  for(;;){
+    url = c.toDataURL('image/jpeg', q);
+    if(url.length <= 1600*1024 || q <= 0.35) break;
+    q -= 0.12;
+  }
+  if(url.length > 3800*1024){ alert('图片过大，请换小一点的图片'); return; }
+  closeMasks();
+  saveTheme({bgImage: url});
 }
 
 /* ---------- 设置 ---------- */
@@ -1281,6 +1400,28 @@ document.addEventListener('DOMContentLoaded', ()=>{
     saveTheme({bgImage: v});
   });
   $('btnResetTheme').addEventListener('click', ()=>{ resetTheme(); });
+  // 背景图本地上传 + 取景框
+  $('btnLocalBg').addEventListener('click', pickLocalBg);
+  $('btnClearBg').addEventListener('click', ()=>{ saveTheme({bgImage:''}); $('bgImageInput').value=''; });
+  (()=>{
+    const box = $('cropBox');
+    let dragging=false, lastX=0, lastY=0;
+    box.addEventListener('pointerdown', e=>{
+      dragging=true; lastX=e.clientX; lastY=e.clientY;
+      try{ box.setPointerCapture(e.pointerId); }catch(err){}
+    });
+    box.addEventListener('pointermove', e=>{
+      if(!dragging) return;
+      cropState.ox += e.clientX-lastX; cropState.oy += e.clientY-lastY;
+      lastX=e.clientX; lastY=e.clientY;
+      clampCropPos(); renderCropImg();
+    });
+    box.addEventListener('pointerup', ()=>{ dragging=false; });
+    box.addEventListener('pointercancel', ()=>{ dragging=false; });
+  })();
+  $('cropScale').addEventListener('input', e=>{
+    if(cropState.img) setCropScale(cropState.minS * parseFloat(e.target.value));
+  });
   applyTheme();
   const observer = new MutationObserver(()=>{ if(state.tab==='journal') bindJournal(); });
   observer.observe($('panelInput'), {childList:true});
