@@ -272,10 +272,10 @@
         <div class="panel-date" id="panelDate"></div>
       </div>
       <div class="tabs" id="tabs">
-        <button class="tab active" data-tab="schedule" onclick="switchTab('schedule')">日程</button>
-        <button class="tab" data-tab="todo" onclick="switchTab('todo')">待办</button>
-        <button class="tab" data-tab="journal" onclick="switchTab('journal')">日记</button>
+        <button class="tab active" data-tab="journal" onclick="switchTab('journal')">日记</button>
         <button class="tab" data-tab="note" onclick="switchTab('note')">随记</button>
+        <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">日程</button>
+        <button class="tab" data-tab="todo" onclick="switchTab('todo')">待办</button>
         <button class="tab" data-tab="habit" onclick="switchTab('habit')">习惯</button>
       </div>
       <div class="panel-input" id="panelInput"></div>
@@ -283,7 +283,7 @@
     </section>
   </div>
 
-  <footer class="footer">数据存储于你的 GitHub 私有仓库 · 由 Data Agent 生成 · <b>V4.3</b></footer>
+  <footer class="footer">数据存储于你的 GitHub 私有仓库 · 由 Data Agent 生成 · <b>V4.4</b></footer>
 </div>
 
 <!-- Settings Modal -->
@@ -417,7 +417,7 @@ const LS_KEY_VIEW   = 'pc_view';
 let state = {
   viewYear: 2026, viewMonth: 9,
   selected: '',
-  tab: 'schedule',
+  tab: 'journal',
   editingEv: null,              // {ds, id} 正在编辑的日程（=添加模式）
   data: { records: {}, config: { habits: [] }, notes: [] },
   sync: 'none',
